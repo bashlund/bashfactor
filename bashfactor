@@ -87,6 +87,12 @@ USAGE
 
 RUN()
 {
+    local rc="${PWD}/.bashfactor.rc"
+
+    if [ -f "${rc}" ]; then
+        source "${rc}"
+    fi
+
     local interactive="${1}"
     shift
 

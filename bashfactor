@@ -1,0 +1,206 @@
+#!/usr/bin/env sh
+#
+# Set variable BASHFACTOR_CMD="compiler exec" to override the hardcoded value in COMPILE:
+# BASHFACTOR_CMD="javac" bashfactor -i oldvar newvar
+# Note that PARSE might need to be edited to work with the output of the chosen compiler.
+
+# Run compiler
+# This can be swapped for any other compiler but then also adapt the EXTRACT function to match
+# that compilers output.
+COMPILE()
+{
+    local oldvar="${1}"
+    shift
+
+    if [ -n "${BASHFACTOR_CMD}" ]; then
+        ${BASHFACTOR_CMD} | grep "${oldvar}"
+    else
+        npx tsc | grep "${oldvar}"
+    fi
+}
+
+# Extract filename and row number from error line.
+#
+# Example:
+# input line from compiler: src/components/anvil-data/AnvilData.ts(10,5): error TS2724: .....
+# This function will extract the full filepath and the row number (10).
+#
+# input: arg1 line of error output from which to extract filepath and row number
+# This works with typescripts tsc compiler output
+#
+# output: assigns to variable file and to variable row which are accessible outside the function.
+#
+PARSE()
+{
+    local line="${1}"
+    shift
+
+    file="${line%%(*}"
+    row="${line%%,*}"
+    row="${row##*(}"
+}
+
+USAGE()
+{
+    cat >&2 << _EOF
+Usage:
+    bashfactor [-i] oldvar newvar
+
+    -i Interactive use. Will pipe list of pending changes into \$EDITOR for review.
+
+Examples:
+
+bashfactor -i GarbledNameVariableList AwesomeList
+
+EDITOR=nano bashfactor -i GarbledNameVariableList AwesomeList
+
+_EOF
+}
+
+HELP()
+{
+    cat >&2 << _EOF
+bashfactor (C) @bashlund 2024 MIT license.
+
+bashfactor is a shell tool to refactor code.
+
+bashfactor is your friend, it can keep you away from IDEs.
+
+It leverages the error output from the compiler and sed to substitute
+locations in the source flagged by the compiler as an error and which
+matches the part to substitute.
+
+Important:
+    Before running bashfactor your project MUST first compile without errors.
+
+When your code compiles flawlessly it is time to trigger the compiler to output
+errors by editing the source file with the declaration of the variable/function
+and renaming that variable/function to its new name.
+
+Now we run bashfactor:
+
+_EOF
+
+USAGE
+
+}
+
+RUN()
+{
+    local interactive="${1}"
+    shift
+
+    local oldvar="${1}"
+    shift
+
+    local newvar="${1}"
+    shift
+
+    local count=0
+    local rounds=0
+
+    # vipe pattern snatched and adapted from:
+    # https://github.com/juliangruber/vipe/blob/master/vipe.sh
+    local tmp="/tmp/vipe.$$.txt"
+
+    while true; do
+        rounds=$((rounds + 1))
+
+        if [ "${interactive}" -eq 0 ]; then
+            printf "Round %d\\n" "${rounds}"
+        fi
+
+        COMPILE "${oldvar}" >"${tmp}"
+
+        local content=
+        content=$(cat "${tmp}")
+
+        if [ -z "${content}" ]; then
+            # done
+            break
+        fi
+
+        printf "# %s\\n# %s\\n#\\n\\n" "Remove any line(s) you do not want refactored." "Remove all text to cancel operation." >"${tmp}.2"
+
+        cat "${tmp}" >>"${tmp}.2"
+
+        mv -f "${tmp}.2" "${tmp}"
+
+        if [ "${interactive}" -eq 1 ]; then
+            ${EDITOR:-vim} "${tmp}" </dev/tty >/dev/tty || { rm "${tmp}"; exit 1; }
+            content=$(cat "${tmp}")
+
+            if [ -z "${content}" ]; then
+                # done
+                break
+            fi
+        fi
+
+        local file=
+        local row=
+        local IFS="
+"
+        for line in ${content}; do
+            PARSE "${line}"
+
+            if [ -z "${file}" ]; then
+                continue
+            fi
+
+            if [ "${file#[#]}" != "${file}" ]; then
+                continue
+            fi
+
+            count=$((count + 1))
+            sed -i "${row}s/\b${oldvar}\b/${newvar}/" "${file}" || exit $?
+        done
+
+        unset IFS
+    done
+
+    rm "${tmp}"
+
+    printf "%d substitutions made in %d round(s)\\n" "${count}" "${rounds}"
+}
+
+if [ "${1}" = "-h" ] || [ "${1}" = "--help" ]; then
+    HELP
+    exit 0
+fi
+
+if [ "$#" -lt 2 ]; then
+    printf "%s\\n\\n" "Error: Too few arguments provided." >&2
+    USAGE
+    exit 1
+fi
+
+if [ "$#" -gt 3 ]; then
+    printf "%s\\n\\n" "Error: Too many arguments provided." >&2
+    USAGE
+    exit 1
+fi
+
+interactive=0
+
+if [ "$#" -eq 3 ]; then
+    if [ "${1}" != "-i" ]; then
+        printf "%s\\n\\n" "Error: expected first argument to be -i" >&2
+        USAGE
+        exit 1
+    fi
+
+    interactive=1
+    shift
+fi
+
+if [ -z "${1}" ]; then
+    printf "%s\\n" "Error: oldvar cannot be empty string" >&2
+    exit 1
+fi
+
+if [ -z "${2}" ]; then
+    printf "%s\\n" "Error: newvar cannot be empty string" >&2
+    exit 1
+fi
+
+RUN "${interactive}" "${1}" "${2}"
